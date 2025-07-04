@@ -1,19 +1,19 @@
-# session/session_manager.py
-
 import re
 import chainlit as cl
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableWithMessageHistory
-from langchain_ollama import OllamaLLM
 from utils.memory import ChatHistoryMemory
+from llm.llama_hosted import HostedLLM
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are DATA GPT, a helpful assistant. Keep replies clear and relevant."),
+    ("system", "You are DATA GPT, a helpful assistant. Respond only to the user’s exact message. "
+     "Do not guess their next question or include extra information unless asked. "
+     "Keep answers well explained, direct, and friendly."),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{input}")
 ])
 
-llm = OllamaLLM(model="qwen3:1.7b", temperature=0.7, num_thread=4)
+llm = HostedLLM()
 
 def get_session_history(session_id: str) -> ChatHistoryMemory:
     return ChatHistoryMemory(session_id)
@@ -77,4 +77,3 @@ async def resume_chat(thread: dict):
         history_messages_key="chat_history"
     )
     cl.user_session.set("chat_chain", chat_chain)
-    cl.user_session.set("session_id", session_id)

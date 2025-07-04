@@ -1,13 +1,12 @@
-# main.py
+import sys
+import os
+import chainlit as cl
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from auth import auth_config
 from session import session_manager
 from sql_executor import executor
-#from charts import chart_generator
-import chainlit as cl
-from session.session_manager import start_chat, resume_chat, handle_message
-
-
 
 @cl.on_chat_start
 async def chat_start():
