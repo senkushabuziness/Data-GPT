@@ -1,20 +1,29 @@
-# Use an official Python image
-FROM python:3.12
+# Use a slim python image
+FROM python:3.12-slim
 
 # Set work directory
 WORKDIR /app
 
-# Copy requirements
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
-# Install dependencies
+# Install essential system dependencies for pip packages
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        libffi-dev \
+        libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy entire project
+# Copy project files (excluding .env and service account json)
 COPY . .
 
-# Expose port if Chainlit runs on 8000
+# Expose port for Chainlit
 EXPOSE 8000
 
-# Command to run your app
-CMD ["chainlit", "run", "main.py", "-w"]
+# Run your Chainlit app
+CMD ["chainlit", "run", "main.py", "--host", "0.0.0.0", "-w"]

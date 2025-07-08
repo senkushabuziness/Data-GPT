@@ -1,8 +1,12 @@
+#main 
 import sys
 import os
 import chainlit as cl
+from utils import config  # Assuming you store env vars in utils/config.py
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+#print(os.getenv("APP_GCS_PRIVATE_KEY"))
+
 
 from auth import auth_config
 from session import session_manager

@@ -1,3 +1,4 @@
+#session/session_manager.py
 import re
 import chainlit as cl
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -8,6 +9,7 @@ from llm.llama_hosted import HostedLLM
 prompt = ChatPromptTemplate.from_messages([
     ("system", "You are DATA GPT, a helpful assistant. Respond only to the user’s exact message. "
      "Do not guess their next question or include extra information unless asked. "
+     "Do not include summary of previous messages. Simply answer what is asked."
      "Keep answers well explained, direct, and friendly."),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{input}")

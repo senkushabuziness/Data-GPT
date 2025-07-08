@@ -24,4 +24,3 @@ node_modules/
 .gitignore
 .DS_Store
 .env
-venv/
