@@ -38,7 +38,6 @@ app_state = {
 
 @router.post("/create-session")
 async def create_session(session_id: Optional[str] = Body(None)):
-
     if not session_id:
         session_id = str(uuid4())
     try:

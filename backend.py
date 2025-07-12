@@ -20,7 +20,7 @@ def read_root():
     return {"message": "Hello World"}
 
 host = os.getenv("HOST", "localhost")
-port = int(os.getenv("PORT", 8000))   
+port = int(os.getenv("PORT", 8001))   
 
 if __name__ == "__main__":
     uvicorn.run("backend:app", host=host, port=port, reload=True)

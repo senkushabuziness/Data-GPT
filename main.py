@@ -19,6 +19,6 @@ async def chat_resume(thread):
 @cl.on_message
 async def message_router(msg: cl.Message):
     if msg.elements:
-        await executor.handle_file_upload(msg)
+        await session_manager.handle_file_upload(msg)
     else:
         await session_manager.handle_message(msg)

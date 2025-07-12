@@ -12,7 +12,7 @@ from Prompts.preprocess_prompt import create_simplified_cleaning_prompt
 from logger import logger
 
 class DataProcessor:
-    def __init__(self, session_id: str, model: str = "qwen/qwen3-32b"):
+    def __init__(self, session_id: str, model: str = "llama3-70b-8192"):
         self.session_id = session_id
         self.db_path = Path(f"uploads/{session_id}/my_duckdb.duckdb").as_posix()
         self.model = model

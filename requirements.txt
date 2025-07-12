@@ -24,4 +24,5 @@ requests
 fastapi_sessions
 chardet
 openpyxl
+psycopg2
 
