@@ -12,3 +12,9 @@ cd chainlit-datalayer
 docker-compose up -d
 
 This sets up Postgres + Prisma + Chainlit Datalayer service locally.
+
+
+for running the application:
+starts terminal, install requriements, 
+1) 1st terminal->    python backend.py
+2) 2nd terminal->    chainlit run main.py -w
