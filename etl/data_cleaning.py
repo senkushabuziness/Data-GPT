@@ -370,6 +370,9 @@ class DataProcessor:
 
     def load_file_to_duckdb(self, df: pd.DataFrame, table_name: str, llm_result: Dict) -> str:
         """Load a DataFrame into DuckDB and store the database in GCS."""
+        temp_db_path = None
+        conn = None
+        
         try:
             # Validate DataFrame
             self.validate_dataframe(df, "DuckDB loading")
@@ -377,51 +380,109 @@ class DataProcessor:
             # Save preprocessed CSV to GCS first
             csv_gcs_uri = self.save_preprocessed_csv_to_gcs(df, table_name)
             
-            # Create temporary local DuckDB file
-            with tempfile.NamedTemporaryFile(suffix='.duckdb', delete=False) as temp_db:
-                temp_db_path = temp_db.name
+            # Create temporary DuckDB file with proper handling
+            temp_db_fd, temp_db_path = tempfile.mkstemp(suffix='.duckdb')
+            os.close(temp_db_fd)  # Close file descriptor
             
-            try:
-                # Connect to temporary DuckDB
-                conn = duckdb.connect(temp_db_path)
-                
-                # Create table with proper schema
-                columns_def = ', '.join([f'"{col}" {dtype}' for col, dtype in llm_result['schema']['columns'].items()])
-                create_table_sql = f'CREATE TABLE "{table_name}" ({columns_def})'
-                conn.execute(create_table_sql)
-                
-                # Insert data
-                for _, row in df.iterrows():
-                    values = [row[col] if not pd.isna(row[col]) else None for col in df.columns]
-                    placeholders = ', '.join(['?' for _ in values])
-                    conn.execute(f'INSERT INTO "{table_name}" VALUES ({placeholders})', values)
-                
-                # Verify insertion
-                row_count = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
-                self.logger.info(f"Table {table_name} created with {row_count} rows in temporary DuckDB")
-                print(f"📊 Table '{table_name}' created with {row_count} rows in DuckDB")
-                
-                # Close connection before uploading
-                conn.close()
-                
-                # Upload DuckDB file to GCS
-                with open(temp_db_path, 'rb') as f:
-                    db_content = f.read()
-                
-                db_gcs_uri = self.upload_to_gcs(db_content, self.db_path)
-                print(f"🗄️ DuckDB database uploaded to: {db_gcs_uri}")
-                
-                return db_gcs_uri
-                
-            finally:
-                # Clean up temporary file
-                if os.path.exists(temp_db_path):
-                    os.unlink(temp_db_path)
+            # Remove the empty file so DuckDB can create it fresh
+            if os.path.exists(temp_db_path):
+                os.unlink(temp_db_path)
+            
+            self.logger.info(f"Creating DuckDB at: {temp_db_path}")
+            
+            # Connect to DuckDB (this will create the file)
+            conn = duckdb.connect(temp_db_path)
+            
+            # Test connection
+            conn.execute("SELECT 1 as test").fetchone()
+            
+            # Create table with proper schema
+            columns_def = ', '.join([f'"{col}" {dtype}' for col, dtype in llm_result['schema']['columns'].items()])
+            create_table_sql = f'CREATE TABLE "{table_name}" ({columns_def})'
+            
+            self.logger.info(f"Creating table: {create_table_sql}")
+            conn.execute(create_table_sql)
+            
+            # Insert data with proper error handling
+            insert_count = 0
+            for index, row in df.iterrows():
+                try:
+                    values = []
+                    for col in df.columns:
+                        val = row[col]
+                        if pd.isna(val):
+                            values.append(None)
+                        else:
+                            values.append(val)
                     
+                    placeholders = ', '.join(['?' for _ in values])
+                    insert_sql = f'INSERT INTO "{table_name}" VALUES ({placeholders})'
+                    conn.execute(insert_sql, values)
+                    insert_count += 1
+                    
+                except Exception as row_error:
+                    self.logger.warning(f"Failed to insert row {index}: {row_error}")
+                    continue
+            
+            # Commit transaction
+            conn.commit()
+            
+            # Verify insertion
+            row_count = conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
+            self.logger.info(f"Table {table_name} created with {row_count} rows")
+            print(f"📊 Table '{table_name}' created with {row_count} rows in DuckDB")
+            
+            # Test query
+            conn.execute(f'SELECT * FROM "{table_name}" LIMIT 1').fetchall()
+            
+            # Close connection before file operations
+            conn.close()
+            conn = None
+            
+            # Verify file exists and is valid
+            if not os.path.exists(temp_db_path):
+                raise ValueError(f"DuckDB file not created at {temp_db_path}")
+            
+            file_size = os.path.getsize(temp_db_path)
+            if file_size == 0:
+                raise ValueError(f"DuckDB file is empty")
+            
+            # Test file can be reopened
+            test_conn = duckdb.connect(temp_db_path)
+            test_count = test_conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()[0]
+            test_conn.close()
+            
+            if test_count != row_count:
+                raise ValueError(f"Data verification failed")
+            
+            # Upload to GCS
+            with open(temp_db_path, 'rb') as f:
+                db_content = f.read()
+            
+            if len(db_content) == 0:
+                raise ValueError("DuckDB file content is empty")
+            
+            db_gcs_uri = self.upload_to_gcs(db_content, self.db_path)
+            print(f"🗄️ DuckDB database uploaded to: {db_gcs_uri}")
+            
+            return db_gcs_uri
+            
         except Exception as e:
             self.logger.error(f"Failed to load DataFrame to DuckDB: {e}")
             print(f"❌ Failed to load DataFrame to DuckDB: {e}")
             raise
+        finally:
+            # Clean up
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
+            if temp_db_path and os.path.exists(temp_db_path):
+                try:
+                    os.unlink(temp_db_path)
+                except:
+                    pass
 
     def get_duckdb_from_gcs(self) -> str:
         """Download DuckDB from GCS to a temporary file and return the path."""

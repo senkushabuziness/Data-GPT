@@ -28,8 +28,7 @@ async def share_session_with_fastapi(session_id: str):
         try:
             response = await client.post(
                 "http://localhost:8001/create-session",
-                content=session_id_str,
-                headers={"Content-Type": "text/plain"},
+                json={"session_id": session_id_str},  # Send as JSON body
                 timeout=10.0
             )
             response.raise_for_status()
@@ -40,12 +39,6 @@ async def share_session_with_fastapi(session_id: str):
                 print(f"Session {returned_session_id} successfully shared with FastAPI")
             else:
                 print(f"Session ID mismatch: expected {session_id_str}, got {returned_session_id}")
-            # Update session cookie if present
-            set_cookie = response.headers.get("set-cookie")
-            if set_cookie and "session_cookie" in set_cookie:
-                new_session_id = set_cookie.split("session_cookie=")[1].split(";")[0]
-                cl.user_session.set("session_id", new_session_id)
-                print(f"Updated session_id to {new_session_id}")
             return returned_session_id
         except httpx.HTTPStatusError as e:
             print(f"HTTP error with session {session_id_str}: {e.response.status_code} {e.response.text}")
@@ -171,7 +164,9 @@ async def handle_file_upload(msg: cl.Message):
         return
 
     session_id = cl.user_session.get("session_id")
-    headers = {"Cookie": f"session_cookie={session_id}"} if session_id else {}
+    if not session_id:
+        await cl.Message("Session ID not found. Please restart the chat.").send()
+        return
 
     async with httpx.AsyncClient() as client:
         for file_element in msg.elements:
@@ -182,18 +177,15 @@ async def handle_file_upload(msg: cl.Message):
                 if not hasattr(file_element, 'content') or not file_element.content:
                     # Try alternative approaches for reading file content
                     if hasattr(file_element, 'path'):
-                        # If file has a path, read it directly
                         with open(file_element.path, 'rb') as f:
                             file_content = f.read()
                     elif hasattr(file_element, 'url'):
-                        # If file has a URL, fetch it
                         response = await client.get(file_element.url)
                         file_content = response.content
                     else:
                         await cl.Message(f"File '{file_name}' has no accessible content. Please try uploading again.").send()
                         continue
                 else:
-                    # Read the file content using the content attribute
                     file_content = await file_element.content.read()
 
                 if not file_content:
@@ -202,13 +194,14 @@ async def handle_file_upload(msg: cl.Message):
 
                 # Prepare the file for the POST request
                 files = {"file": (file_name, file_content, file_element.mime)}
-                
+                data = {"session_id": session_id}  # Send session_id as form data
+
                 # Send the file to the backend
                 print(f"Sending file '{file_name}' to /upload with session_id: {session_id}")
                 response = await client.post(
                     "http://localhost:8001/upload",
                     files=files,
-                    headers=headers,
+                    data=data,
                     timeout=30.0
                 )
                 response.raise_for_status()
@@ -217,24 +210,14 @@ async def handle_file_upload(msg: cl.Message):
                 response_data = response.json()
                 await cl.Message(f"File '{file_name}' uploaded successfully: {response_data.get('message', 'No message provided')}").send()
 
-                # Update session cookie if a new one is set
-                set_cookie = response.headers.get("set-cookie")
-                if set_cookie and "session_cookie" in set_cookie:
-                    new_session_id = set_cookie.split("session_cookie=")[1].split(";")[0]
-                    cl.user_session.set("session_id", new_session_id)
-                    print(f"Updated session_id to {new_session_id}")
-
             except httpx.RequestError as e:
                 await cl.Message(f"Network error uploading file '{file_name}': {str(e)}").send()
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 403:
-                    await cl.Message(f"Session error uploading file '{file_name}': No valid session. A new session may have been created.").send()
-                else:
-                    await cl.Message(f"HTTP error uploading file '{file_name}': {e.response.status_code} {e.response.text}").send()
+                await cl.Message(f"HTTP error uploading file '{file_name}': {e.response.status_code} {e.response.text}").send()
             except Exception as e:
                 await cl.Message(f"Unexpected error uploading file '{file_name}': {str(e)}").send()
                 print(f"Error details for '{file_name}': {str(e)}")
-                
+
 @cl.on_message
 async def handle_message(msg: cl.Message):
     # First, check if there are any file uploads to handle

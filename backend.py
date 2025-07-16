@@ -10,9 +10,6 @@ load_dotenv()
 
 app = FastAPI(title="Financial Data Processor API")
 app.include_router(router)
-# Initialize app state
-app.state.current_file_path = None
-app.state.current_db_table_path = None
 
 @app.get("/")
 def read_root():
@@ -20,7 +17,7 @@ def read_root():
     return {"message": "Hello World"}
 
 host = os.getenv("HOST", "localhost")
-port = int(os.getenv("PORT", 8001))   
+port = int(os.getenv("PORT", 8001))
 
 if __name__ == "__main__":
     uvicorn.run("backend:app", host=host, port=port, reload=True)
