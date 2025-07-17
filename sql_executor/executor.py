@@ -9,7 +9,7 @@ from llm.nl_to_sql import generate_sql_from_prompt
 con = duckdb.connect()
 session_dfs = {}
 
-async def handle_file_upload(msg: cl.Message):
+async def handle_file_uploadsss(msg: cl.Message):
     session_id = cl.context.session.id
     file = msg.elements[0]
     df = pd.read_csv(file.path)
