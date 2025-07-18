@@ -14,9 +14,9 @@ from api.states import app_state
 async def process_uploaded_file(file: UploadFile, session_data: SessionData, request: Request) -> dict:
     try:
         # Validate session_id and user_id
-        if not session_data.session_id or not session_data.user_id:
-            logger.error("Session ID or User ID is missing")
-            raise HTTPException(status_code=400, detail="Invalid session: session_id or user_id is missing")
+        if not session_data.session_id:
+            logger.error("Session ID is missing")
+            raise HTTPException(status_code=400, detail="Invalid session: session_id is missing")
 
         # Check file extension
         if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx') or file.filename.endswith('.parquet')):
@@ -58,13 +58,15 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
         with open(file_path, "wb") as f:
             f.write(content)
 
-        # Generate table name (will be used as file_name in uploads table)
+        # Generate table name
         table_name = re.sub(r'[^a-zA-Z0-9_]', '_', Path(file.filename).stem).strip('_')
         if not table_name or not re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', table_name):
             table_name = f"uploaded_file_{session_data.session_id}"
             logger.warning(f"Invalid table name derived; using: {table_name}")
 
         # Process with LLM
+        db_manager = MultiUserDuckDBManager(db_base_path="db")
+        session_data.user_id = db_manager.get_user_id_from_postgres(session_data.session_id)  # Use session_id as thread_id
         processor = DataProcessor(session_id=session_data.session_id, user_id=session_data.user_id)
         llm_result, cleaned_df = processor.preprocess_with_llm(df, table_name)
         if cleaned_df.empty:
@@ -92,31 +94,28 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
         session_data.cleaned_df = cleaned_df
         session_data.llm_result = llm_result
 
-        # Load to DuckDB (stores in uploads table)
-        try:
-            db_manager = MultiUserDuckDBManager()  # Instantiate the class
-            cleaned_df, llm_result = db_manager.load_file_to_duckdb(preprocessed_file_path.as_posix(), table_name, session_data)
-        except ValueError as e:
-            logger.error(f"DuckDB loading failed: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"DuckDB loading failed: {str(e)}")
+        # Load to DuckDB
+        cleaned_df, llm_result = db_manager.load_file_to_duckdb(preprocessed_file_path.as_posix(), session_data)
 
         # Update session data
         session_data.uploaded_file_path = preprocessed_file_path.as_posix()
-        session_data.table_name = table_name
+        session_data.table_name = session_data.table_name
         await backend.update(UUID(session_data.session_id), session_data)
 
         return {
             "message": f"File {file.filename} uploaded, processed, and saved to DuckDB successfully",
             "headers": llm_result['cleaned_data']['columns'],
             "row_count": len(cleaned_df),
-            "table_name": table_name,
+            "table_name": session_data.table_name,
             "data_quality_issues": llm_result.get('data_quality_issues', []),
             "recommendations": llm_result.get('recommendations', []),
             "schema_info": llm_result.get('schema', {}),
             "dimension_tables": llm_result.get('dimension_tables', []),
             "sample_queries": llm_result.get('sample_queries', {})
         }
-
+    except HTTPException as e:
+        logger.error(f"Upload error: {str(e.detail)}", exc_info=True)
+        raise e
     except Exception as e:
         logger.error(f"Upload error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")

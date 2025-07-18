@@ -4,14 +4,15 @@ import pandas as pd
 import duckdb
 import os
 import psycopg2
+from urllib.parse import urlparse
 from logger import logger
 from pathlib import Path
 from dotenv import load_dotenv
-from etl.data_cleaning import DataProcessor
 import threading
 import chainlit as cl
 import uuid
-
+from etl.data_cleaning import DataProcessor
+import re
 load_dotenv()
 
 @dataclass
@@ -33,53 +34,58 @@ class MultiUserDuckDBManager:
         self.db_path = os.path.join(db_base_path, "master.duckdb")
         self.lock = threading.Lock()
         self._ensure_db_directory()
-        # PostgreSQL connection parameters from .env
+        database_url = os.environ.get("DATABASE_URL")
+        if not database_url:
+            raise ValueError("DATABASE_URL environment variable is required")
+        parsed_url = urlparse(database_url)
         self.pg_conn_params = {
-            "dbname": os.environ.get("POSTGRES_DB", "chainlit"),
-            "user": os.environ.get("POSTGRES_USER", "postgres"),
-            "password": os.environ.get("POSTGRES_PASSWORD", ""),
-            "host": os.environ.get("POSTGRES_HOST", "localhost"),
-            "port": os.environ.get("POSTGRES_PORT", "5432")
+            "dbname": parsed_url.path.lstrip('/'),
+            "user": parsed_url.username,
+            "password": parsed_url.password,
+            "host": parsed_url.hostname,
+            "port": parsed_url.port or "5432"
         }
 
     def _ensure_db_directory(self):
-        """Ensure the database directory exists."""
         os.makedirs(self.db_base_path, exist_ok=True)
 
-    def get_user_id_from_postgres(self) -> str:
-        """Fetch user_id from Chainlit's PostgreSQL database using current session."""
+    def get_user_id_from_postgres(self, thread_id: str) -> str:
+        logger.debug("Entering get_user_id_from_postgres with thread_id: %s", thread_id)
         try:
-            chainlit_user = cl.user_session.get("user")
-            if not chainlit_user:
-                logger.error("No Chainlit user found in session")
-                raise ValueError("No Chainlit user found in session")
-            
             conn = psycopg2.connect(**self.pg_conn_params)
             cursor = conn.cursor()
             
-            cursor.execute("SELECT id FROM users WHERE identifier = %s", (chainlit_user.identifier,))
+            cursor.execute('SELECT "userId" FROM public."Thread" WHERE id = %s', (thread_id,))
             result = cursor.fetchone()
-            if not result:
-                logger.error(f"No user found with identifier {chainlit_user.identifier}")
-                raise ValueError(f"No user found with identifier {chainlit_user.identifier}")
+            logger.info(f"PostgreSQL query result for thread_id {thread_id}: {result}")
+            
+            if not result or result[0] is None:
+                logger.error(f"No userId found for thread id {thread_id}")
+                raise ValueError(f"No userId found for thread id {thread_id}")
             
             user_id = str(result[0])
+            logger.info(f"Fetched user_id: {user_id} from PostgreSQL Thread table")
+            SessionData.user_id = user_id  # Update class-level user_id
             cursor.close()
             conn.close()
-            logger.info(f"Fetched user_id: {user_id} from PostgreSQL")
             return user_id
+            
         except Exception as e:
-            logger.error(f"Failed to fetch user_id from PostgreSQL: {str(e)}")
+            logger.error(f"Failed to fetch user_id from PostgreSQL for thread_id {thread_id}: {str(e)}")
             raise ValueError(f"Failed to fetch user_id from PostgreSQL: {str(e)}")
 
-    def load_file_to_duckdb(self, file_path: str, table_name: str, session_data: SessionData) -> Tuple[pd.DataFrame, Dict]:
+    def load_file_to_duckdb(self, file_path: str, session_data: SessionData) -> Tuple[pd.DataFrame, Dict]:
         try:
             if not session_data.session_id:
                 logger.error("Session ID is missing")
                 raise ValueError("Session ID is missing")
             
-            if not session_data.user_id:
-                session_data.user_id = self.get_user_id_from_postgres()
+            # Force fetch user_id from Postgres using session_id as thread_id
+            session_data.user_id = self.get_user_id_from_postgres(session_data.session_id)
+            logger.info(f"Session data user_id after fetch: {session_data.user_id}")
+            
+            filename = os.path.splitext(os.path.basename(file_path))[0]
+            table_name = f"{session_data.session_id}_{filename}"
             
             processor = DataProcessor(session_data.session_id, session_data.user_id, db_base_path=self.db_base_path)
             df = processor.load_file_with_encoding(file_path)
@@ -92,23 +98,22 @@ class MultiUserDuckDBManager:
             
             session_data.cleaned_df = cleaned_df
             session_data.llm_result = llm_result
+            session_data.table_name = table_name
             
-            gcs_uri = processor.load_file_to_duckdb(cleaned_df, table_name, llm_result)
-            session_data.db_path = processor.db_path
+            db_path = processor.load_file_to_duckdb(cleaned_df, table_name, llm_result)
+            session_data.db_path = db_path
             
+            logger.info(f"User_id inserted into duckdb_users: {session_data.user_id}")
             print(f"✅ Data successfully loaded to table {table_name}!")
             print(f"👤 User: {session_data.user_id}")
             print(f"📊 Table '{table_name}' created/updated with new data")
-            if gcs_uri and gcs_uri.startswith("gs://"):
-                print(f"📤 DuckDB database uploaded to GCS: {gcs_uri}")
-            else:
-                print(f"⚠️ GCS upload skipped, using local path: {gcs_uri}")
+            print(f"📍 DuckDB database stored locally at: {db_path}")
             
             return cleaned_df, llm_result
         except Exception as e:
             logger.error(f"Error loading file to DuckDB: {str(e)}")
             raise ValueError(f"Failed to load file to DuckDB: {str(e)}")
-
+        
     def query_user_database(self, session_data: SessionData, sql_query: str) -> pd.DataFrame:
         try:
             if not session_data.session_id:

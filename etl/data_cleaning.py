@@ -13,64 +13,57 @@ from logger import logger
 import duckdb
 import threading
 import numpy as np
-from google.cloud import storage
-from google.api_core.exceptions import GoogleAPIError
 
 class DataProcessor:
-    def __init__(self, session_id: str, user_id: str, model: str = "qwen/qwen3-32B", db_base_path: str = "db"):
+    def __init__(self, session_id: str, user_id: str, model: str = "qwen/qwen3-32B", db_base_path: str = "db", gcs_enabled: bool = False):
         self.session_id = session_id
         self.user_id = user_id
         self.db_base_path = db_base_path
         self.db_path = os.path.join(db_base_path, "master.duckdb")
         self.model = model
         self.lock = threading.Lock()
-        self.gcs_enabled = True  # Set to False to skip GCS uploads if credentials fail
+        self.gcs_enabled = gcs_enabled
         
-        # Initialize logging
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
         
-        # Initialize Groq client
         groq_api_key = os.environ.get("GROQ_API_KEY")
         if not groq_api_key:
             raise ValueError("GROQ_API_KEY environment variable is required")
         self.client = Groq(api_key=groq_api_key)
         
-        # Initialize GCS client
         self.gcs_client = None
         self.gcs_bucket = None
-        try:
-            self.gcs_bucket_name = os.environ.get("BUCKET_NAME")
-            if not self.gcs_bucket_name:
-                self.logger.warning("GCS_BUCKET_NAME not set, disabling GCS uploads")
-                self.gcs_enabled = False
-            else:
-                credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-                if not credentials_path or not os.path.exists(credentials_path):
-                    self.logger.warning(f"GOOGLE_APPLICATION_CREDENTIALS not set or invalid ({credentials_path}), disabling GCS uploads")
+        if self.gcs_enabled:
+            try:
+                self.gcs_bucket_name = os.environ.get("BUCKET_NAME")
+                if not self.gcs_bucket_name:
+                    self.logger.warning("GCS_BUCKET_NAME not set, disabling GCS uploads")
                     self.gcs_enabled = False
                 else:
-                    self.gcs_client = storage.Client()
-                    self.gcs_bucket = self.gcs_client.bucket(self.gcs_bucket_name)
-                    self.logger.info(f"GCS client initialized for bucket: {self.gcs_bucket_name}")
-        except GoogleAPIError as e:
-            self.logger.error(f"Failed to initialize GCS client: {str(e)}")
-            self.gcs_enabled = False
-        except Exception as e:
-            self.logger.error(f"Unexpected error initializing GCS client: {str(e)}")
-            self.gcs_enabled = False
+                    credentials_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+                    if not credentials_path or not os.path.exists(credentials_path):
+                        self.logger.warning(f"GOOGLE_APPLICATION_CREDENTIALS not set or invalid ({credentials_path}), disabling GCS uploads")
+                        self.gcs_enabled = False
+                    else:
+                        self.gcs_client = storage.Client()
+                        self.gcs_bucket = self.gcs_client.bucket(self.gcs_bucket_name)
+                        self.logger.info(f"GCS client initialized for bucket: {self.gcs_bucket_name}")
+            except GoogleAPIError as e:
+                self.logger.error(f"Failed to initialize GCS client: {str(e)}")
+                self.gcs_enabled = False
+            except Exception as e:
+                self.logger.error(f"Unexpected error initializing GCS client: {str(e)}")
+                self.gcs_enabled = False
         
-        # Initialize DuckDB
         self._init_duckdb()
-
+        
     def _init_duckdb(self):
-        """Initialize DuckDB database with duckdb_users table, migrating schema if necessary."""
         try:
             with self.lock:
                 os.makedirs(self.db_base_path, exist_ok=True)
                 conn = duckdb.connect(self.db_path)
                 
-                # Check for old 'uploads' table and rename if exists
                 try:
                     schema = conn.execute("DESCRIBE uploads").fetchall()
                     columns = [col[0] for col in schema]
@@ -83,7 +76,6 @@ class DataProcessor:
                 except Exception:
                     self.logger.info("No uploads table found, creating duckdb_users")
                 
-                # Create duckdb_users table
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS duckdb_users (
                         user_id STRING,
@@ -100,26 +92,16 @@ class DataProcessor:
             raise
 
     def upload_to_gcs(self, file_path: str, destination_blob_name: str) -> str:
-        """Upload a file to GCS and return the GCS URI."""
         if not self.gcs_enabled:
             self.logger.warning(f"GCS uploads disabled, skipping upload of {file_path}")
             return ""
-        try:
-            blob = self.gcs_bucket.blob(destination_blob_name)
-            blob.upload_from_filename(file_path)
-            gcs_uri = f"gs://{self.gcs_bucket_name}/{destination_blob_name}"
-            self.logger.info(f"Uploaded {file_path} to GCS: {gcs_uri}")
-            print(f"📤 Uploaded {file_path} to GCS: {gcs_uri}")
-            return gcs_uri
-        except Exception as e:
-            self.logger.error(f"Failed to upload {file_path} to GCS: {str(e)}")
-            raise ValueError(f"Failed to upload {file_path} to GCS: {str(e)}")
+        # This block will never execute due to gcs_enabled = False
+        raise NotImplementedError("GCS uploads are disabled")
 
     def validate_balance_sheet(self, df: pd.DataFrame) -> bool:
-        return True  # Placeholder for actual validation logic
-
+        return True
+    
     def detect_encoding(self, file_content: bytes) -> str:
-        """Detect file encoding using chardet from file content."""
         try:
             result = chardet.detect(file_content[:10000])
             encoding = result['encoding']
@@ -134,7 +116,6 @@ class DataProcessor:
             return self.try_common_encodings(file_content)
 
     def try_common_encodings(self, file_content: bytes) -> str:
-        """Try common encodings to find one that works."""
         common_encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1', 'utf-16']
         for encoding in common_encodings:
             try:
@@ -147,7 +128,6 @@ class DataProcessor:
         return 'latin-1'
 
     def load_file_with_encoding(self, file_path: str) -> pd.DataFrame:
-        """Load Excel or CSV file based on extension and validate balance sheet structure."""
         try:
             file_extension = os.path.splitext(file_path)[1].lower()
             if file_extension == '.xlsx':
@@ -168,7 +148,6 @@ class DataProcessor:
             else:
                 raise ValueError(f"Unsupported file extension: {file_extension}. Only .xlsx and .csv are supported.")
             
-            # Validate balance sheet structure
             self.validate_balance_sheet(df)
             return df
         except Exception as e:
@@ -420,16 +399,13 @@ class DataProcessor:
             self.logger.info(f"Preprocessed CSV saved to: {csv_path}")
             print(f"💾 Preprocessed CSV saved to: {csv_path}")
             
-            # Upload CSV to GCS
-            destination_blob_name = f"preprocessed/{self.user_id}/{self.session_id}_{table_name}.csv"
-            gcs_uri = self.upload_to_gcs(csv_path, destination_blob_name) if self.gcs_enabled else csv_path
-            return gcs_uri
+            # No GCS upload since gcs_enabled is False
+            return csv_path
         except Exception as e:
-            self.logger.error(f"Failed to save or upload preprocessed CSV: {e}")
+            self.logger.error(f"Failed to save preprocessed CSV: {e}")
             raise
 
     def load_file_to_duckdb(self, df: pd.DataFrame, table_name: str, llm_result: Dict) -> str:
-        """Create a table with the file name and load processed data into it, and update duckdb_users table."""
         try:
             self.validate_dataframe(df, "DuckDB loading")
             
@@ -484,14 +460,12 @@ class DataProcessor:
                 self.logger.info(f"Inserted data into table {table_name}. Total rows: {row_count}")
                 print(f"📊 Data inserted into table {table_name} (total rows: {row_count})")
                 
-                # Upload DuckDB database to GCS
-                destination_blob_name = f"duckdb/{self.user_id}/master.duckdb"
-                gcs_uri = self.upload_to_gcs(self.db_path, destination_blob_name) if self.gcs_enabled else self.db_path
-                return gcs_uri
+                # No GCS upload since gcs_enabled is False
+                return self.db_path
                 
         except Exception as e:
-            self.logger.error(f"Failed to load data to DuckDB or upload to GCS: {e}")
-            raise ValueError(f"Failed to load data to DuckDB or upload to GCS: {str(e)}")
+            self.logger.error(f"Failed to load data to DuckDB: {e}")
+            raise ValueError(f"Failed to load data to DuckDB: {str(e)}")
 
     def query_duckdb(self, sql_query: str) -> pd.DataFrame:
         try:
