@@ -95,7 +95,7 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
         session_data.llm_result = llm_result
 
         # Load to DuckDB
-        cleaned_df, llm_result = db_manager.load_file_to_duckdb(preprocessed_file_path.as_posix(), session_data)
+        cleaned_df, llm_result =  await db_manager.load_file_to_duckdb(preprocessed_file_path.as_posix(), session_data)
 
         # Update session data
         session_data.uploaded_file_path = preprocessed_file_path.as_posix()

@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from auth import auth_config
 from session import session_manager
 # from sql_executor import executor
+from sql_executor import executor
 @cl.on_chat_start
 async def chat_start():
     await session_manager.start_chat()
@@ -24,4 +25,4 @@ async def message_router(msg: cl.Message):
     if msg.elements:
         await session_manager.handle_file_upload(msg)
     else:
-        await session_manager.handle_message(msg)
+        await executor.handle_sql_message(msg)

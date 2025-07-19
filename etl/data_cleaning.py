@@ -13,6 +13,8 @@ from logger import logger
 import duckdb
 import threading
 import numpy as np
+from google.cloud import storage
+from google.api_core.exceptions import GoogleAPIError
 
 class DataProcessor:
     def __init__(self, session_id: str, user_id: str, model: str = "qwen/qwen3-32B", db_base_path: str = "db", gcs_enabled: bool = False):

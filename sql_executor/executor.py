@@ -1,33 +1,26 @@
-# sql_executor/executor.py
-
 import pandas as pd
 import duckdb
-import requests
 import chainlit as cl
 from llm.nl_to_sql import generate_sql_from_prompt
-
-con = duckdb.connect()
-session_dfs = {}
-
-async def handle_file_uploadsss(msg: cl.Message):
-    session_id = cl.context.session.id
-    file = msg.elements[0]
-    df = pd.read_csv(file.path)
-    session_dfs[session_id] = df
-    con.register("df", df)
-    await cl.Message("✅ File uploaded. Now ask your data questions.").send()
+from api.states import app_state
 
 async def handle_sql_message(msg: cl.Message):
     session_id = cl.context.session.id
-    df = session_dfs.get(session_id)
-    if df is None:
-        await cl.Message("⚠️ Please upload a CSV file first.").send()
+    # Retrieve session data from app_state
+    print(f"Session ID: {session_id}")
+    session_data = app_state.get(session_id)
+    if not session_data or "cleaned_df" not in session_data or "db_path" not in session_data or "table_name" not in session_data:
+        await cl.Message("⚠️ Please upload a file first.").send()
         return
+
+    df = session_data["cleaned_df"]
+    db_path = session_data["db_path"]
+    table_name = session_data["table_name"]
 
     user_question = msg.content.strip()
     prompt = f"""
 You are an expert data analyst.
-Your ONLY job is to generate the DuckDB SQL query to answer the user's question using the table named 'df'.
+Your ONLY job is to generate the DuckDB SQL query to answer the user's question using the table named '{table_name}'.
 
 IMPORTANT:
 - Do NOT provide any explanations or clarifications.
@@ -44,12 +37,16 @@ Sample rows:
 {df.head(5).to_markdown()}
 """
 
-
     sql_query = generate_sql_from_prompt(prompt)
     await cl.Message(f"📝 **Generated SQL:**\n```\n{sql_query}\n```").send()
 
     try:
-        result = con.execute(sql_query).fetchdf()
-        await cl.Message(f"✅ **Result:**\n\n{result.head(10).to_markdown()}").send()
+        # Connect to the specific DuckDB database for the session
+        con = duckdb.connect(db_path)
+        try:
+            result = con.execute(sql_query).fetchdf()
+            await cl.Message(f"✅ **Result:**\n\n{result.head(10).to_markdown()}").send()
+        finally:
+            con.close()  # Ensure the connection is closed
     except Exception as e:
         await cl.Message(f"❌ **SQL Error:** {str(e)}").send()
