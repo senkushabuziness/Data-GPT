@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+google-cloud-storage
+google-auth
+google-auth-oauthlib
+starlette
+python-multipart
