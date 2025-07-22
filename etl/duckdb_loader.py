@@ -127,7 +127,7 @@ class MultiUserDuckDBManager:
             table_name = f"{session_data.session_id}_{filename}"
             
             processor = DataProcessor(session_data.session_id, session_data.user_id, db_base_path=self.db_base_path)
-            df = processor.load_file_with_encoding(file_path)
+            df = processor.load_file_with_encoding(file_path,skip_validation=True)
         
             
             llm_result, cleaned_df = processor.preprocess_with_llm(df, table_name)

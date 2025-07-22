@@ -55,6 +55,21 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
             logger.error(f"Failed to parse file: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
 
+        temp_processor = DataProcessor(
+            session_id=session_data.session_id, 
+            user_id=session_data.user_id or "temp_validation"
+        )
+        
+        try:
+            temp_processor.validate_balance_sheet(df)
+            logger.info("Financial data validation passed")
+        except ValueError as e:
+            logger.error(f"Financial data validation failed: {str(e)}")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"File validation failed: {str(e)}"
+            )
+
         with open(file_path, "wb") as f:
             f.write(content)
 
