@@ -1,3 +1,4 @@
+# services/upload_service.py
 from fastapi import UploadFile, Request, HTTPException
 from uuid import UUID
 import os
@@ -8,20 +9,20 @@ from pathlib import Path
 from logger import logger
 from services.validate_create_session import SessionData, backend
 from etl.data_cleaning import DataProcessor
-from etl.duckdb_loader import MultiUserDuckDBManager  # Import the class instead
+from etl.duckdb_loader import MultiUserDuckDBManager
 from api.states import app_state
 
 async def process_uploaded_file(file: UploadFile, session_data: SessionData, request: Request) -> dict:
     try:
-        # Validate session_id and user_id
+        # Validate session_id
         if not session_data.session_id:
             logger.error("Session ID is missing")
             raise HTTPException(status_code=400, detail="Invalid session: session_id is missing")
 
         # Check file extension
-        if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx') or file.filename.endswith('.parquet')):
+        if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx')):
             logger.error(f"Unsupported file type: {file.filename}")
-            raise HTTPException(status_code=400, detail="Only CSV, Excel (.xlsx), and Parquet files are supported")
+            raise HTTPException(status_code=400, detail="Only CSV and Excel (.xlsx) files are supported")
 
         # Create temporary upload directory
         temp_upload_dir = Path(f"/tmp/uploads/{session_data.session_id}").as_posix()
@@ -34,44 +35,36 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
             logger.info(f"Raw CSV content (first 1000 chars):\n{content.decode('utf-8')[:1000]}")
         elif file.filename.endswith('.xlsx'):
             logger.info(f"Excel file uploaded: {file.filename}, size: {len(content)} bytes")
-        else:
-            logger.info(f"Parquet file uploaded: {file.filename}, size: {len(content)} bytes")
 
-        # Validate file content and read into DataFrame
+        # Read into DataFrame
         try:
             if file.filename.endswith('.csv'):
                 df = pd.read_csv(io.BytesIO(content), na_values=['NA', 'N/A', '-', 'TBD', ''], keep_default_na=False)
-            elif file.filename.endswith('.xlsx'):
-                df = pd.read_excel(io.BytesIO(content), sheet_name=0, na_values=['NA', 'N/A', '-', 'TBD', ''], keep_default_na=False)
             else:
-                df = pd.read_parquet(io.BytesIO(content))
+                df = pd.read_excel(io.BytesIO(content), sheet_name=0, na_values=['NA', 'N/A', '-', 'TBD', ''], keep_default_na=False)
+            # Add missing year columns for balance sheets
+            if 'Balance Sheet' in df.to_string().lower():
+                expected_years = ['Year 1', 'Year 2', 'Year 3', 'Year 4', 'Year 5']
+                for year in expected_years:
+                    if year not in df.columns:
+                        df[year] = pd.NA
             logger.info(f"Input file sample:\n{df.head().to_string()}")
-            if df.empty or len(df.columns) < 2:
-                logger.error("File is empty or has insufficient columns")
-                raise ValueError("File is empty or has insufficient columns")
-            df = df.dropna(how='all')
-            logger.info(f"After empty row removal, DataFrame shape: {df.shape}")
         except Exception as e:
             logger.error(f"Failed to parse file: {str(e)}")
             raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
 
-        temp_processor = DataProcessor(
+        # Initialize DataProcessor with GCS enabled
+        processor = DataProcessor(
             session_id=session_data.session_id, 
-            user_id=session_data.user_id or "temp_validation"
+            user_id=session_data.user_id or "temp_validation",
+            gcs_enabled=True
         )
-        
-        try:
-            temp_processor.validate_balance_sheet(df)
-            logger.info("Financial data validation passed")
-        except ValueError as e:
-            logger.error(f"Financial data validation failed: {str(e)}")
-            raise HTTPException(
-                status_code=400, 
-                detail=f"File validation failed: {str(e)}"
-            )
 
-        with open(file_path, "wb") as f:
-            f.write(content)
+        # Validate against templates
+        is_valid, validation_message = processor.validate_against_templates(df)
+        if not is_valid:
+            logger.error(f"Template validation failed: {validation_message}")
+            raise HTTPException(status_code=400, detail=validation_message)
 
         # Generate table name
         table_name = re.sub(r'[^a-zA-Z0-9_]', '_', Path(file.filename).stem).strip('_')
@@ -81,8 +74,7 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
 
         # Process with LLM
         db_manager = MultiUserDuckDBManager(db_base_path="db")
-        session_data.user_id = db_manager.get_user_id_from_postgres(session_data.session_id)  # Use session_id as thread_id
-        processor = DataProcessor(session_id=session_data.session_id, user_id=session_data.user_id)
+        session_data.user_id = db_manager.get_user_id_from_postgres(session_data.session_id)
         llm_result, cleaned_df = processor.preprocess_with_llm(df, table_name)
         if cleaned_df.empty:
             logger.error("LLM processing resulted in empty DataFrame")
@@ -90,12 +82,12 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
 
         logger.info(f"LLM processed DataFrame shape: {cleaned_df.shape}, columns: {list(cleaned_df.columns)}")
 
-        # Save preprocessed file as CSV temporarily
+        # Save preprocessed file as CSV
         preprocessed_file_path = Path(temp_upload_dir) / f"preprocessed_{Path(file.filename).stem}.csv"
         cleaned_df.to_csv(preprocessed_file_path, index=False)
         logger.info(f"Cleaned DataFrame saved to {preprocessed_file_path}")
 
-        # Store cleaned_df in app_state
+        # Store in app_state
         app_state[session_data.session_id] = {
             "cleaned_df": cleaned_df,
             "db_path": processor.db_path,
@@ -110,23 +102,24 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
         session_data.llm_result = llm_result
 
         # Load to DuckDB
-        cleaned_df, llm_result =  await db_manager.load_file_to_duckdb(preprocessed_file_path.as_posix(), session_data)
+        cleaned_df, llm_result = await db_manager.load_file_to_duckdb(preprocessed_file_path.as_posix(), session_data)
 
         # Update session data
         session_data.uploaded_file_path = preprocessed_file_path.as_posix()
-        session_data.table_name = session_data.table_name
+        session_data.table_name = table_name
         await backend.update(UUID(session_data.session_id), session_data)
 
         return {
-            "message": f"File {file.filename} uploaded, processed, and saved to DuckDB successfully",
+            "message": f"File {file.filename} uploaded, validated against templates, processed, and saved to DuckDB successfully",
             "headers": llm_result['cleaned_data']['columns'],
             "row_count": len(cleaned_df),
-            "table_name": session_data.table_name,
-            "data_quality_issues": llm_result.get('data_quality_issues', []),
-            "recommendations": llm_result.get('recommendations', []),
+            "table_name": table_name,
+            "data_quality_issues": llm_result.get('data_quality_report', {}).get('issues', []),
+            "recommendations": llm_result.get('data_quality_report', {}).get('recommendations', []),
             "schema_info": llm_result.get('schema', {}),
             "dimension_tables": llm_result.get('dimension_tables', []),
-            "sample_queries": llm_result.get('sample_queries', {})
+            "sample_queries": llm_result.get('sample_queries', {}),
+            "validation_message": validation_message
         }
     except HTTPException as e:
         logger.error(f"Upload error: {str(e.detail)}", exc_info=True)
