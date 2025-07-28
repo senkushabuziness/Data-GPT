@@ -7,7 +7,7 @@ import pandas as pd
 import os
 import duckdb
 import logging
-from groq import Groq
+from groq import Groq 
 from etl.data_cleaning import DataProcessor
 from models.response import UploadResponse
 from services.upload_service import process_uploaded_file
@@ -23,23 +23,32 @@ from pydantic import BaseModel
 
 class SessionRequest(BaseModel):
     session_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 @router.post("/create-session")
 async def create_session(request: SessionRequest = Body(...)):
     session_id = request.session_id
+    user_id = request.user_id
     if not session_id:
         session_id = str(uuid4())
+    if not user_id:
+        user_id = str(uuid4())
     try:
         UUID(session_id)
     except ValueError:
         logger.warning(f"Invalid session_id provided: {session_id}. Generating new UUID.")
         session_id = str(uuid4())
+    try:
+        UUID(user_id)
+    except ValueError:
+        logger.warning(f"Invalid user_id provided: {user_id}. Generating new UUID.")
+        user_id = str(uuid4())
 
-    session_data = SessionData(session_id=session_id, user_id=str(uuid4()))  # Generate user_id
+    session_data = SessionData(session_id=session_id, user_id=user_id)  
     await backend.create(UUID(session_id), session_data)
-    logger.info(f"Created or reused session: {session_id}")
+    logger.info(f"Created or reused session: {session_id} for user: {user_id}")
 
-    response = JSONResponse(content={"message": "Session created or reused", "session_id": session_id, "user_id": session_data.user_id})
+    response = JSONResponse(content={"message": "Session created or reused", "session_id": session_id, "user_id": user_id})
     cookie.attach_to_response(response=response, session_id=UUID(session_id))
     return response
 

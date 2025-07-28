@@ -1,4 +1,3 @@
-# services/upload_service.py
 from fastapi import UploadFile, Request, HTTPException
 from uuid import UUID
 import os
@@ -11,10 +10,12 @@ from services.validate_create_session import SessionData, backend
 from etl.data_cleaning import DataProcessor
 from etl.duckdb_loader import MultiUserDuckDBManager
 from api.states import app_state
+import json
 
 async def process_uploaded_file(file: UploadFile, session_data: SessionData, request: Request) -> dict:
     try:
         # Validate session_id
+        logger.info(f"Received session_id: {session_data.session_id}, user_id: {session_data.user_id}")
         if not session_data.session_id:
             logger.error("Session ID is missing")
             raise HTTPException(status_code=400, detail="Invalid session: session_id is missing")
@@ -50,7 +51,7 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
                         df[year] = pd.NA
             logger.info(f"Input file sample:\n{df.head().to_string()}")
         except Exception as e:
-            logger.error(f"Failed to parse file: {str(e)}")
+            logger.error(f"Failed to parse file: {str(e)}", exc_info=True)
             raise HTTPException(status_code=400, detail=f"Invalid file: {str(e)}")
 
         # Initialize DataProcessor with GCS enabled
@@ -75,6 +76,7 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
         # Process with LLM
         db_manager = MultiUserDuckDBManager(db_base_path="db")
         session_data.user_id = db_manager.get_user_id_from_postgres(session_data.session_id)
+        logger.info(f"Updated user_id from postgres: {session_data.user_id}")
         llm_result, cleaned_df = processor.preprocess_with_llm(df, table_name)
         if cleaned_df.empty:
             logger.error("LLM processing resulted in empty DataFrame")
@@ -88,15 +90,19 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
         logger.info(f"Cleaned DataFrame saved to {preprocessed_file_path}")
 
         # Store in app_state
-        app_state[session_data.session_id] = {
-            "cleaned_df": cleaned_df,
-            "db_path": processor.db_path,
-            "llm_result": llm_result,
-            "uploaded_file_path": preprocessed_file_path.as_posix(),
-            "table_name": table_name
-        }
-
-        # Set session_data attributes
+        logger.info(f"Updating app_state for session: {session_data.session_id}")
+        # app_state[session_data.session_id] = {
+        #     "db_path": processor.db_path.as_posix() if isinstance(processor.db_path, Path) else str(processor.db_path),
+        #     "uploaded_file_path": preprocessed_file_path.as_posix(),
+        #     "table_name": table_name
+        # }
+        if session_data.session_id not in app_state:
+            logger.warning(f"Session {session_data.session_id} not found in app_state, creating it now")
+            app_state[session_data.session_id] = {
+                "db_path": processor.db_path.as_posix() if isinstance(processor.db_path, Path) else str(processor.db_path),
+                "uploaded_file_path": preprocessed_file_path.as_posix(),
+                "table_name": table_name
+    }
         session_data.db_path = processor.db_path
         session_data.cleaned_df = cleaned_df
         session_data.llm_result = llm_result
@@ -108,12 +114,19 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
         session_data.uploaded_file_path = preprocessed_file_path.as_posix()
         session_data.table_name = table_name
         await backend.update(UUID(session_data.session_id), session_data)
-
-        return {
+        logger.info(f"Session data updated for session_id: {session_data.session_id}")
+        logger.info(f"app_state variable exists: {locals().get('app_state', 'NOT_FOUND')}")
+        logger.info(f"session_data.session_id: {session_data.session_id}")
+        logger.info(f"app_state content: {app_state}")
+        logger.info(f"app_state.get result: {app_state.get(session_data.session_id, {})}")
+        # Prepare response with app_state as a dictionary keyed by session_id
+        response_dict = {
             "message": f"File {file.filename} uploaded, validated against templates, processed, and saved to DuckDB successfully",
             "headers": llm_result['cleaned_data']['columns'],
             "row_count": len(cleaned_df),
             "table_name": table_name,
+            "app_state":  {session_data.session_id: app_state.get(session_data.session_id, {})},
+            # "app_state_str": json.dumps({session_data.session_id: app_state.get(session_data.session_id, {})}, indent=2),
             "data_quality_issues": llm_result.get('data_quality_report', {}).get('issues', []),
             "recommendations": llm_result.get('data_quality_report', {}).get('recommendations', []),
             "schema_info": llm_result.get('schema', {}),
@@ -121,9 +134,16 @@ async def process_uploaded_file(file: UploadFile, session_data: SessionData, req
             "sample_queries": llm_result.get('sample_queries', {}),
             "validation_message": validation_message
         }
+        logger.info(f"Final Response being sent: {response_dict}")
+
+        if 'app_state' in response_dict:
+            logger.info(f"__++++==========\nresponse_dict['app_state']: {response_dict['app_state']}")
+
+        logger.info(f"Response being sent: {response_dict}")
+        return response_dict
     except HTTPException as e:
         logger.error(f"Upload error: {str(e.detail)}", exc_info=True)
         raise e
     except Exception as e:
-        logger.error(f"Upload error: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error during file processing: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")

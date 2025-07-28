@@ -18,7 +18,7 @@ from google.api_core.exceptions import GoogleAPIError
 
 
 class DataProcessor:
-    def __init__(self, session_id: str, user_id: str, model: str = "qwen/qwen3-32B", db_base_path: str = "db", gcs_enabled: bool = False):
+    def __init__(self, session_id: str, user_id: str, model: str = "llama-3.3-70b-versatile", db_base_path: str = "db", gcs_enabled: bool = False):
         self.session_id = session_id
         self.user_id = user_id
         self.db_base_path = db_base_path
@@ -58,6 +58,7 @@ class DataProcessor:
             except Exception as e:
                 self.logger.error(f"Unexpected error initializing GCS client: {str(e)}")
                 self.gcs_enabled = False
+            self._init_duckdb()
 
     def _init_duckdb(self):
         try:

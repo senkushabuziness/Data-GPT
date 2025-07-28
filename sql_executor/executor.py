@@ -3,19 +3,37 @@ import duckdb
 import chainlit as cl
 from llm.nl_to_sql import generate_sql_from_prompt
 from api.states import app_state
+import psycopg2
+from urllib.parse import urlparse
+from logger import logger
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 async def handle_sql_message(msg: cl.Message):
-    session_id = cl.context.session.id
+    session_id = cl.user_session.get("session_id")
+    user_id = cl.user_session.get("user").id
+    logger.info(f"Session ID: {session_id}")
+
     # Retrieve session data from app_state
-    print(f"Session ID: {session_id}")
     session_data = app_state.get(session_id)
-    if not session_data or "cleaned_df" not in session_data or "db_path" not in session_data or "table_name" not in session_data:
+    if not session_data :
+        print(session_data)
         await cl.Message("⚠️ Please upload a file first.").send()
+        
         return
 
-    df = session_data["cleaned_df"]
+    # Load DataFrame from CSV
+    try:
+        df = pd.read_csv(session_data["uploaded_file_path"])
+    except Exception as e:
+        logger.error(f"Error loading DataFrame from {session_data['uploaded_file_path']}: {str(e)}")
+        await cl.Message(f"❌ Error loading DataFrame: {str(e)}").send()
+        return
+
     db_path = session_data["db_path"]
-    table_name = session_data["table_name"]
+    table_name = f"{user_id}.{session_data['table_name']}"
 
     user_question = msg.content.strip()
     prompt = f"""
@@ -49,4 +67,5 @@ Sample rows:
         finally:
             con.close()  # Ensure the connection is closed
     except Exception as e:
+        logger.error(f"SQL execution error: {str(e)}")
         await cl.Message(f"❌ **SQL Error:** {str(e)}").send()

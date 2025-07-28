@@ -5,6 +5,7 @@ from api.routes import router
 from dotenv import load_dotenv
 import os
 from logger import logger
+from api.states import app_state
 
 load_dotenv()
 
@@ -15,6 +16,7 @@ app.include_router(router)
 def read_root():
     logger.info("Root endpoint was accessed.")
     return {"message": "Hello World"}
+
 
 host = os.getenv("HOST", "localhost")
 port = int(os.getenv("PORT", 8001))
